@@ -1,0 +1,9 @@
+# exclude everything
+.vscode/
+**/__pycache__/
+complaintscraper/log/*
+data/*
+
+# exception to the rule
+!complaintscraper/log/.gitkeep 
+!data/.gitkeep 
