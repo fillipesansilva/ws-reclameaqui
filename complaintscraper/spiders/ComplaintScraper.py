@@ -1,6 +1,6 @@
 '''
-This spider file contains the spider logic and scraping code. 
-In order to determine what needs to go in this file, we have to inspect the website!
+This spider file contains the spider logic and scraping code to get all customer complaints. 
+scrapy crawl ComplaintScraper --set FEED_EXPORT_ENCODING=utf-8 -o complaintscraper/data/complaints.json
 '''
 
 import scrapy
@@ -11,9 +11,12 @@ from complaintscraper.utils.DataCleaning import DataCleaning
 
 import json
 import pydash
+import ast
+import unicodedata
+import re
 
 class ComplaintScraper(CrawlSpider):
-
+  
   name = "ComplaintScraper"  
   custom_settings = {
     'USER_AGENT' : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36',
@@ -23,35 +26,69 @@ class ComplaintScraper(CrawlSpider):
     'DOWNLOAD_DELAY': 1
   }
   
-  start_urls = [
-    "https://www.reclameaqui.com.br/empresa/santander/lista-reclamacoes/?pagina=1"
-  ]
-
   def start_requests(self):
-    for url in self.start_urls:
-      yield scrapy.Request(url, self.parse_page)
+    companies = self.get_companies()
+    for company in companies:
+      id = company['id']
+      categoryName = company['categoryName']
+      companyShortname = company['companyShortname']
+      for page in range(0, 1010, 10):
+        base = f'https://iosearch.reclameaqui.com.br/raichu-io-site-search-v1/query/companyComplains/10/{page}?company={id}'
+        yield scrapy.Request(base, callback = self.parse_complaints, cb_kwargs=dict(companyShortname=companyShortname, categoryName = categoryName)) 
+      break
 
-  def parse_page(self, response):
-    number_of_pages = int(response.xpath('//*[@id="__next"]/div[1]/div/div[3]/main/section[2]/div[2]/div[2]/div[11]/ul/li[8]/text()').extract()[0])
-    for page in range(1, number_of_pages + 1, 1):
-      url =  "https://www.reclameaqui.com.br/empresa/santander/lista-reclamacoes/?pagina=" + str(page)
-      yield scrapy.Request(url, callback=self.parse_complaint, dont_filter=True)
+  def get_companies(self):
+    companies = []
+    with open('complaintscraper/data/companies.json', encoding='utf8') as file:
+      companies = ast.literal_eval(file.read())
+      
+    # Removing duplicate entries (companies)
+    rsl = []
+    ids = []
+    for company in companies:
+      if company['id'] in ids: continue
+      ids.append(company['id'])
+      rsl.append(company) 
 
-  def parse_complaint(self, response):
-    for row in response.xpath('//div[contains(@class,"bJdtis")]'):
-      link = row.xpath("./a/@href").get()
-      yield scrapy.Request(response.urljoin(link), callback=self.parse_model_complaint, dont_filter=True)
+    return rsl
+      
+  def parse_complaints(self, response, companyShortname, categoryName):
+    data = json.loads(response.text)
+    for complaint in range(10):
+      title = data['complainResult']['complains']['data'][complaint]['title']
+      id    = data['complainResult']['complains']['data'][complaint]['id']
+
+      title = unicodedata.normalize("NFD", title)
+      title = re.sub("[\u0300-\u036f]", "", title)  
+      title = re.sub(r'[^a-zA-Z0-9]+', ' ', title)
+      title = title.replace(" ","-")
+
+      link = f"https://www.reclameaqui.com.br/{companyShortname}/" + title + "_"+ id
+      
+      yield scrapy.Request(link, callback=self.parse_model_complaint, dont_filter=True, cb_kwargs=dict(categoryName = categoryName))
 
   def get_data(self, data, query):
     return pydash.get(data, query, None)
 
-  def parse_model_complaint(self, response):
+  def get_interactions(self, data):
+    rsl = []
+    i = 0
+    query = "props.pageProps.complaint.interactions." + str(i) + ".message"
+    interaction = self.get_data(data, query)
+    while interaction:
+      rsl.append(interaction)
+      i += 1
+      query = "props.pageProps.complaint.interactions." + str(i) + ".message"
+      interaction = self.get_data(data, query)
+    return rsl
 
+  def parse_model_complaint(self, response, categoryName):
     dataCleaning = DataCleaning()
     complaintItem = ComplaintItem()
 
     data = json.loads(response.xpath('//*[@id="__NEXT_DATA__"]//text()').extract()[0])
     
+    complaintItem['categoryName']     = categoryName
     complaintItem['id']               = self.get_data(data, "props.pageProps.complaint.legacyId")
     complaintItem['title']            = self.get_data(data, "props.pageProps.complaint.title")
     complaintItem['solved']           = self.get_data(data, "props.pageProps.complaint.solved")
@@ -66,9 +103,8 @@ class ComplaintScraper(CrawlSpider):
     complaintItem['userState']        = self.get_data(data, "props.pageProps.complaint.userState")
     complaintItem['creation_date']    = self.get_data(data, "props.pageProps.complaint.created")
     
-    complaintItem['company_answer']   = self.get_data(data, "props.pageProps.complaint.interactions.0.message")
-    complaintItem['consumer_replica'] = self.get_data(data, "props.pageProps.complaint.interactions.1.message")
-    complaintItem['final_answer']     = self.get_data(data, "props.pageProps.complaint.interactions.2.message")
+    #Interactions contain customer and company replicas.
+    complaintItem['interactions']   = self.get_interactions(data)
     complaintItem['deal_again']       = self.get_data(data, "props.pageProps.complaint.dealAgain")
     complaintItem['score']            = self.get_data(data, "props.pageProps.complaint.score")
       

@@ -14,6 +14,11 @@ class DataCleaning:
         - processed data.
     """ 
     
-    data['status'] = data['status'][0]
+    data['status']      = data['status'][0]
+    data['description'] = data['description'].replace("<br />", " ")
+
+    for i in range(len(data['interactions'])):
+      data['interactions'][i] = data['interactions'][i].replace("<br />", " ")
+
     
     return data
